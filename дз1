@@ -1,0 +1,46 @@
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import random
+
+BASE = "https://ru.wikipedia.org"
+headers = {
+        "User-Agent": "MyWikiBot/1.0"
+    }
+
+def req(url):
+    r = requests.get(url, headers=headers,timeout=20)
+    soup = BeautifulSoup(r.text, "lxml")
+    return soup, r.url
+def lin(soup):
+    links = []
+    for i in soup.find_all("a", href=True):
+        href = i["href"]
+        if href.startswith("/wiki/") and ":" not in href:
+            links.append(href)
+    return links
+
+vis = []
+api_url = "https://ru.wikipedia.org/api/rest_v1/page/random/summary"
+r = requests.get(api_url, headers=headers, timeout=20)
+data = r.json()
+c_url = data["content_urls"]["desktop"]["page"]
+title = data["title"]
+vis.append({"title": title, "url": c_url})
+
+
+for i in range(2):
+    soup,url = req(c_url)
+    links = lin(soup)
+    if not links:
+        print("В этой статье нет ссылок")
+        break
+    c_url = urljoin(BASE, random.choice(links))
+    soup,url = req(c_url)
+    title = soup.find("h1").get_text(strip=True)
+    vis.append({"title": title, "url": url})
+
+for i in vis:
+    print(i["title"])
+    print(i["url"])
+    print()
