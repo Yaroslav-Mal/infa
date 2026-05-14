@@ -1,0 +1,191 @@
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import unquote
+from collections import deque
+import time
+import random
+import networkx as nx
+import pandas as pd
+import matplotlib.pyplot as plt
+
+BASE = "https://ru.wikipedia.org"
+API_URL = "https://ru.wikipedia.org/w/api.php"
+HEADERS = {
+    "User-Agent": "StudentProject/1.0 (school homework; low request rate)"
+}
+
+def article_to_url(title: str) -> str:
+    return f"{BASE}/wiki/{title.replace(' ', '_')}"
+def is_valid_article_href(href: str) -> bool:
+    if not href.startswith("/wiki/"):
+        return False
+    title = href[len("/wiki/"):]
+    if not title:
+        return False
+    if "#" in title:
+        return False
+    if ":" in title:
+        return False
+    if "?" in title:
+        return False
+    if title.startswith("Заглавная_страница"):
+        return False
+    return True
+def href_to_title(href: str) -> str:
+    return unquote(href[len("/wiki/"):]).replace("_", " ")
+links_cache = {}
+def extract_article_links(article_title: str, max_links: int = 8):
+    if article_title in links_cache:
+        return links_cache[article_title][:max_links]
+    params = {
+        "action": "parse",
+        "page": article_title,
+        "prop": "text",
+        "format": "json",
+        "redirects": 1
+    }
+    resp = requests.get(
+        API_URL,
+        params=params,
+        headers=HEADERS,
+        timeout=20
+    )
+    if resp.status_code == 429:
+        print("Википедия дала 429 Too Many Requests. Ждём 20 секунд...")
+        time.sleep(20)
+        return []
+    if resp.status_code == 403:
+        print("Википедия временно ограничила доступ. Лучше запустить код позже.")
+        return []
+    resp.raise_for_status()
+    data = resp.json()
+    if "parse" not in data:
+        return []
+    html = data["parse"]["text"]["*"]
+    soup = BeautifulSoup(html, "lxml")
+    links = []
+    seen = set()
+    for p in soup.find_all("p"):
+        for a in p.find_all("a", href=True):
+            href = a["href"]
+            if not is_valid_article_href(href):
+                continue
+            target_title = href_to_title(href)
+            if target_title == article_title:
+                continue
+            if target_title in seen:
+                continue
+            seen.add(target_title)
+            links.append(target_title)
+            if len(links) >= max_links:
+                links_cache[article_title] = links
+                return links
+    links_cache[article_title] = links
+    return links
+def get_random_article_title():
+    random_articles = [
+        "Алгебра",
+        "Геометрия",
+        "Арифметика",
+        "Математический анализ",
+        "Теория вероятностей",
+        "Статистика",
+        "Топология",
+        "Логика",
+        "Информатика",
+        "Физика",
+        "Астрономия",
+        "Механика",
+        "Кибернетика",
+        "Дифференциальное уравнение"
+    ]
+    return random.choice(random_articles)
+def find_clicks_to_target(
+        start_title: str,
+        target_title: str,
+        max_depth: int = 3,
+        max_links_per_page: int = 8,
+        sleep_sec: float = 5,
+        max_pages: int = 15
+):
+    G = nx.DiGraph()
+    visited = set()
+    queue = deque([(start_title, 0)])
+    checked_pages = 0
+    while queue:
+        current_title, current_depth = queue.popleft()
+        if current_title == target_title:
+            return current_depth, G
+        if current_title in visited:
+            continue
+        visited.add(current_title)
+        checked_pages += 1
+        if checked_pages > max_pages:
+            break
+        if current_depth >= max_depth:
+            continue
+        try:
+            neighbors = extract_article_links(
+                current_title,
+                max_links=max_links_per_page
+            )
+        except Exception as e:
+            print(f"Ошибка при обработке статьи '{current_title}': {e}")
+            continue
+        for nb in neighbors:
+            G.add_edge(current_title, nb)
+            if nb == target_title:
+                return current_depth + 1, G
+            if nb not in visited:
+                queue.append((nb, current_depth + 1))
+        time.sleep(sleep_sec)
+    return None, G
+TARGET_ARTICLE = "Математика"
+EXPERIMENTS = 5
+MAX_DEPTH = 3
+MAX_LINKS_PER_PAGE = 8
+results = []
+for i in range(EXPERIMENTS):
+    start_article = get_random_article_title()
+    print("Эксперимент", i + 1)
+    print("Стартовая статья:", start_article)
+    clicks, G = find_clicks_to_target(
+        start_title=start_article,
+        target_title=TARGET_ARTICLE,
+        max_depth=MAX_DEPTH,
+        max_links_per_page=MAX_LINKS_PER_PAGE,
+        sleep_sec=5,
+        max_pages=15
+    )
+    if clicks is None:
+        print("До статьи не дошли")
+    else:
+        print("Число переходов:", clicks)
+    print()
+    results.append({
+        "start_article": start_article,
+        "target_article": TARGET_ARTICLE,
+        "clicks": clicks
+    })
+    time.sleep(10)
+df = pd.DataFrame(results)
+print(df)
+not_found = df["clicks"].isna().sum()
+print()
+print("Всего экспериментов:", EXPERIMENTS)
+print("Путь найден:", EXPERIMENTS - not_found)
+print("Путь не найден:", not_found)
+good_results = df[df["clicks"].notna()]
+plt.figure(figsize=(7,5))
+if len(good_results) > 0:
+    plt.hist(
+        good_results["clicks"],
+        bins=range(0, MAX_DEPTH+2),
+        edgecolor="black"
+    )
+plt.xlabel("Число переходов")
+plt.ylabel("Количество экспериментов")
+plt.title(f"Сколько переходов нужно, чтобы дойти до статьи «{TARGET_ARTICLE}»")
+plt.xticks(range(0, MAX_DEPTH+1))
+plt.grid(alpha=0.3)
+plt.show()
